@@ -1,0 +1,26 @@
+# Generated site and local download/test caches
+/dist/
+/.cache/
+
+# Legacy reference material and local cache dump inputs
+/reference/
+/dumps/
+dump.*
+
+# Python bytecode, test caches, and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Installed frontend test dependencies
+node_modules/
+
+# Temporary files and operating-system metadata
+*.log
+*.tmp
+*.part
+.DS_Store
+Thumbs.db
+Desktop.ini
