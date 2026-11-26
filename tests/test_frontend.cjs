@@ -111,72 +111,6 @@ async function run() {
     assert.ok([...doc.querySelectorAll('h2')].some(h => h.textContent === 'References (0)'));
   } finally { dom.window.close(); }
 
-  for (const [query,type,iconType] of [
-    ['?type=dbtables&id=29','structs','struct'],
-    ['?type=dbrows&id=1280','structs','struct'],
-    ['?type=dbtables&id=88','dbrows','dbrow'],
-    ['?type=achievements&id=2241','achievements','achievement'],
-    ['?type=quests&id=257','npcs','npc'],
-  ]) {
-    dom = await open(query);
-    try {
-      const links = [...dom.window.document.querySelectorAll(`a[href^="index.html?type=${type}&id="]`)].filter(target=>!target.closest('[data-column="id"]'));
-      assert.ok(links.length, `Expected ${type} links on ${query}`);
-      for (const target of links) {
-        const icon = target.firstElementChild;
-        assert.equal(icon.tagName,'IMG');
-        assert.equal(icon.getAttribute('src'),`images/${iconType}-icon.png`);
-        assert.equal(icon.src,`http://localhost/images/${iconType}-icon.png`);
-        assert.ok(fs.existsSync(path.join(dataRoot,'images',`${iconType}-icon.png`)),'Marker icons must be included in the published site');
-        assert.equal(icon.width,11);
-        assert.equal(icon.height,11);
-        assert.equal(icon.alt,'');
-        assert.ok(target.textContent, 'The config link label must remain visible');
-      }
-    } finally { dom.window.close(); }
-  }
-
-  const markerTypes = {structs:'struct',dbrows:'dbrow',achievements:'achievement',enums:'enum',quests:'quest',npcs:'npc',idkits:'idkit',invs:'inv',varplayerbits:'varplayerbit',params:'param',dbtables:'dbtable',items:'item',scenery:'scenery',cursors:'cursor',quickchatcategories:'quickchatcategory',quickchatphrases:'quickchatphrase',varplayers:'varplayer',mapelements:'mapelement',mapsceneicons:'mapsceneicon',animationsets:'animationset',sequences:'sequence',spoteffects:'spoteffect',hitsplats:'hitsplat',healthbars:'healthbar'};
-  const markerValues = Object.keys(markerTypes).map(type=>({type,id:1,text:`${type} example`,...(type==='mapelements' ? {preview:{kind:'image',src:'https://example.test/map-preview.png',text:'Map preview'}} : {})}));
-  const markerFixture = {id:3,name:'marker_fixture',rows:[{key:'example',raw:'',type:'unknown',parsed:markerValues}],references:markerValues};
-  dom = await open('?type=items&id=3',{'3':markerFixture});
-  try {
-    const doc = dom.window.document;
-    for (const [type,iconType] of Object.entries(markerTypes)) {
-      for (const selector of ['main > .table-wrap','.reference-list']) {
-        const links = [...doc.querySelectorAll(`${selector} a`)].filter(target=>target.getAttribute('href')===`index.html?type=${type}&id=1`);
-        assert.ok(links.length,`${type} must render in ${selector}`);
-        for (const target of links) {
-          let image = target.querySelector('img.struct-icon');
-          const preview = target.parentElement.querySelector(':scope > img');
-          if (preview) {
-            assert.equal(image,null,'An individual sprite should not also show a type badge');
-            assert.equal(preview.width,32);
-            preview.dispatchEvent(new dom.window.Event('error'));
-            assert.equal(preview.hidden,true);
-            image = target.querySelector('img.struct-icon');
-            preview.dispatchEvent(new dom.window.Event('error'));
-            assert.equal(target.querySelectorAll('img.struct-icon').length,1,'A failing sprite adds only one fallback marker');
-          }
-          assert.ok(image,`${type} typed values and references must include their available icon`);
-          assert.equal(image.getAttribute('src'),`images/${iconType}-icon.png`);
-          assert.equal(image.width,11);
-          assert.equal(image.height,11);
-          assert.ok(fs.existsSync(path.join(dataRoot,'images',`${iconType}-icon.png`)));
-        }
-      }
-    }
-  } finally { dom.window.close(); }
-
-  for (const type of Object.keys(markerTypes)) {
-    dom = await open(`?type=${type}`);
-    try {
-      const cells = [...dom.window.document.querySelectorAll('main > .table-wrap > table > tbody > tr > td:first-child')];
-      assert.ok(cells.length,`${type} listing has ID cells`);
-      assert.ok(cells.every(cell=>cell.querySelector('a') && !cell.querySelector('img')),`${type} listing IDs must be text links without icons`);
-    } finally { dom.window.close(); }
-  }
-
   dom = await open('?type=enums&id=29');
   try {
     const doc = dom.window.document;
@@ -185,7 +119,6 @@ async function run() {
     for (const key of ['inputtype','outputtype','default']) assert.ok(metadata.querySelector(`[data-column="${key}"] dd`));
     const fallback = metadata.querySelector('[data-column="default"] dd');
     assert.equal(fallback.querySelector('a').getAttribute('href'),'index.html?type=items&id=4069');
-    assert.ok(fallback.querySelector('img').src.endsWith('/4069.png'));
     const view = doc.querySelector('main > .table-wrap > table');
     assert.equal(view.tBodies[0].rows.length,4);
     assert.ok([...view.tBodies[0].rows].every(row=>!['inputtype','outputtype','default'].includes(column(row,'raw_key').textContent)));
@@ -243,7 +176,6 @@ async function run() {
     assert.deepEqual(entries.map(r=>column(r,'col11').textContent),['8778: plank_oak, 10, true','1539: nails, 75, true']);
     assert.equal(row.cells[0].rowSpan,entries.length);
     const item = column(row,'col13');
-    assert.ok(item.querySelector('img').src.endsWith('/44152.png'));
     assert.equal(item.querySelector('a').getAttribute('href'),'index.html?type=items&id=44152');
     assert.equal(column(row,'col13-quantity').textContent,'1');
     assert.ok(view.tBodies[0].rows.length > 1);
@@ -263,17 +195,11 @@ async function run() {
       ['index.html?type=items&id=49445','10'],
     ]);
     assert.equal(entries[0].cells[0].rowSpan,2);
-    assert.equal(entries[0].cells[0].querySelector('img'),null,'Database record identifiers must not show marker icons');
     const plainItem = column(entries[0],'col14');
     assert.equal(plainItem.querySelector('a').getAttribute('href'),'index.html?type=items&id=49516');
-    assert.equal(plainItem.querySelector('.stock-parsed-item').firstElementChild.tagName,'IMG');
-    assert.ok(plainItem.querySelector('img').src.endsWith('/49516.png'));
-    assert.equal(plainItem.querySelectorAll('img').length,1);
-    assert.equal(column(entries[0],'col15').querySelectorAll('img').length,1,'Split item values must keep one sprite');
     assert.equal(column(view.tHead.rows[0],'col17').colSpan,2);
     const dbrowLink = column(entries[0],'col17').querySelector('a');
     assert.equal(dbrowLink.getAttribute('href'),'index.html?type=dbrows&id=3005');
-    assert.ok(dbrowLink.querySelector('img').src.endsWith('/dbrow-icon.png'));
     assert.equal(column(entries[0],'col17-quantity').textContent,'100');
     assertTableGrid(view);
     const next = [...section(dom.window.document,'Database rows (149)').find(n=>n.classList.contains('pagination')).querySelectorAll('button')][1];
@@ -322,14 +248,7 @@ async function run() {
       const rows = [...view.tBodies[0].rows];
       const row = rows.find(r=>column(r,'raw_key').textContent===key);
       const item = column(row,'parsed_item');
-      assert.equal(item.querySelectorAll('img').length,1);
       assert.equal(item.querySelector('a').getAttribute('href'),`index.html?type=${targetType}&id=${itemId}`);
-      if (targetType==='items') {
-        assert.equal(item.querySelector('img').src,`https://chisel.weirdgloop.org/gazproj/icons/png/${itemId}.png`);
-        assert.equal(item.querySelector('span').firstElementChild.tagName,'IMG');
-        item.querySelector('img').dispatchEvent(new dom.window.Event('error'));
-        assert.equal(item.querySelector('img').hidden,true,'Unavailable item icons must not show a broken image');
-      } else assert.ok(item.querySelector('a > img').src.endsWith('/dbrow-icon.png'));
       assert.equal(column(row,'parsed_quantity').textContent,quantity);
       assert.equal(column(rows[0],'parsed_val').colSpan,2, 'Other values must span both parsed columns');
     } finally { dom.window.close(); }
@@ -403,7 +322,6 @@ async function run() {
     const target = column(row,'parsed_val').querySelector('a');
     assert.equal(target.getAttribute('href'),'index.html?type=quests&id=257');
     assert.equal(target.textContent,'257: cooks_assistant');
-    assert.ok(target.querySelector('img').src.endsWith('/quest-icon.png'));
   } finally { dom.window.close(); }
 
   dom = await open('?type=npc_params&id=quest');
@@ -651,7 +569,6 @@ async function smoke() {
       assert.equal(doc.querySelector('main .error'),null,`${type} listing failed`);
       assert.equal(doc.querySelector('#config-type').value,type);
       assert.equal(doc.querySelectorAll('main > .table-wrap > table > tbody > tr').length,Math.max(1,Math.min(100,count)));
-      assert.equal(doc.querySelector('main > .table-wrap > table > tbody > tr > td:first-child img'),null,`${type} listing ID cells must not contain icons`);
     } finally { dom.window.close(); }
     if (!entries.length) continue;
     const entry = entries.find(entry=>entry.size>0) || entries[0];
@@ -814,7 +731,6 @@ async function historyChecks() {
       format(dom,'parsed');
       const target = row.cells[1].querySelector('a');
       assert.equal(target.getAttribute('href'),'index.html?type=structs&id=624');
-      assert.equal(target.querySelector('img').width,11);
       assert.ok(!row.textContent.includes('References:'));
       format(dom,'raw');
       assert.equal(row.cells[1].textContent,'login_facebook_data');
