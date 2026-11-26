@@ -2,6 +2,7 @@ import contextlib
 import gzip
 import io
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +17,31 @@ def record(id, config_name, **fields):
 
 
 class ImportTests(unittest.TestCase):
+    def test_recoloured_markers_keep_the_original_pixel_pattern_and_transparency(self):
+        from builder.build import FRONTEND
+        config = json.loads((FRONTEND.parent / 'tools/icon-palettes.json').read_text())
+        def chunks(path):
+            data = path.read_bytes()
+            result, offset = [], 8
+            while offset < len(data):
+                size = struct.unpack('>I',data[offset:offset+4])[0]
+                kind = data[offset+4:offset+8]
+                if kind != b'PLTE':
+                    result.append(data[offset:offset+12+size])
+                offset += 12 + size
+            return data[:8],result
+        original = chunks(FRONTEND.parent / config['template'])
+        for filename in config['icons']:
+            self.assertEqual(chunks(FRONTEND / 'images' / filename),original,
+                             f'{filename} must differ only in its palette, preserving original pixel data and alpha')
+
+    def test_github_token_is_only_sent_to_the_github_api(self):
+        from builder.build import request
+        with patch.dict('os.environ',{'GITHUB_TOKEN':'test-token'}),patch('builder.build.urllib.request.urlopen') as opening:
+            request('https://api.github.com/repos/owner/repo/commits/main')
+            self.assertEqual(opening.call_args.args[0].get_header('Authorization'),'Bearer test-token')
+            request('https://raw.githubusercontent.com/owner/repo/main/config/dump.obj')
+            self.assertIsNone(opening.call_args.args[0].get_header('Authorization'))
     def test_numeric_comments_preserve_sparse_ids_and_repeated_fields(self):
         rows = list(parse_dump(io.StringIO('// 0\n[zero]\nmodel=a\nmodel=b\n\n// 42\n[last]\nname=A=B\n')))
         self.assertEqual([r["id"] for r in rows], [0, 42])
@@ -73,13 +99,21 @@ class ImportTests(unittest.TestCase):
                 (dumps / f'dump.{kind}').write_text(f'// 0\n[{kind}_0]\n',encoding='utf-8')
             (dumps / 'dump.obj').write_text('// 0\n[obj_0]\nname=Unicode: épée\ncount1=obj_0,2\n',encoding='utf-8')
             output = root / 'site'
-            with patch('sys.argv',['builder.build','--dump-dir',str(dumps),'--output',str(output),'--compress-json']):
+            with patch('sys.argv',['builder.build','--dump-dir',str(dumps),'--output',str(output),'--compress-json','--no-history']):
                 main()
             manifest = json.loads((output / 'data/manifest.json').read_text())
             self.assertEqual(manifest['compression'],'gzip')
             self.assertFalse((output / 'data/manifest.json.gz').exists())
             self.assertTrue((output / 'key_labels.json').exists())
             self.assertTrue((output / 'index.html').exists())
+            from builder.build import FRONTEND
+            images = list((FRONTEND / 'images').rglob('*'))
+            self.assertTrue(any(image.name == 'struct-icon.png' for image in images))
+            for image in images:
+                if image.is_file():
+                    self.assertEqual((output / 'images' / image.relative_to(FRONTEND / 'images')).read_bytes(),image.read_bytes())
+                    if image.name.endswith('-icon.png'):
+                        self.assertEqual(struct.unpack('>II',image.read_bytes()[16:24]),(11,11),'Type markers must remain native 11×11 PNGs')
             self.assertFalse((output / 'data/items/0.json').exists())
             with gzip.open(output / 'data/items/0.json.gz','rt',encoding='utf-8') as stream:
                 item = json.load(stream)['0']

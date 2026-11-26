@@ -18,6 +18,7 @@
   let manifest;
   let keyLabels;
   let cursorPreviews;
+  let parameterNames;
   function readableWords(value) {
     const words = String(value).replace(/([a-z])([A-Z])/g, '$1 $2').split(/[_\s]+/).filter(Boolean).map(word => {
       if (keyLabels.words[word.toLowerCase()]) return keyLabels.words[word.toLowerCase()];
@@ -60,14 +61,24 @@
     if (id !== undefined) q.set('id', id);
     return `index.html?${q}`;
   }
-  function link(type, id, text) {
+  function markerIcon(type) {
+    const iconType = {
+      structs:'struct', dbrows:'dbrow', achievements:'achievement', enums:'enum',
+      quests:'quest', npcs:'npc', idkits:'idkit', invs:'inv', varplayerbits:'varplayerbit',
+      params:'param', dbtables:'dbtable', items:'item', scenery:'scenery', cursors:'cursor',
+      quickchatcategories:'quickchatcategory', quickchatphrases:'quickchatphrase', varplayers:'varplayer',
+      mapelements:'mapelement', mapsceneicons:'mapsceneicon', animationsets:'animationset',
+      sequences:'sequence', spoteffects:'spoteffect', hitsplats:'hitsplat', healthbars:'healthbar',
+    }[type];
+    if (!iconType) return null;
+    const icon = el('img', null, {class:'struct-icon', src:`images/${iconType}-icon.png`, alt:'', width:'11', height:'11', loading:'lazy'});
+    icon.onerror = () => { icon.hidden = true; };
+    return icon;
+  }
+  function link(type, id, text, showIcon = false) {
     const target = el('a', text ?? id, {href: url(type, id)});
-    const iconType = {structs:'struct', dbrows:'dbrow', achievements:'achievement', enums:'enum', quests:'quest', npcs:'npc'}[type];
-    if (iconType && id !== undefined) {
-      const icon = el('img', null, {class:'struct-icon', src:`https://chisel.weirdgloop.org/structs_rs3/images/${iconType}-icon.png`, alt:'', width:'11', height:'11', loading:'lazy'});
-      icon.onerror = () => { icon.hidden = true; };
-      target.prepend(icon);
-    }
+    const icon = showIcon && id !== undefined ? markerIcon(type) : null;
+    if (icon) target.prepend(icon);
     return target;
   }
   function navigation() {
@@ -145,10 +156,11 @@
     for (const [label, href, title] of targets) shortcuts.append(el('a', label, {href, title, 'aria-label': title, target: '_blank', rel: 'noopener noreferrer'}));
     return shortcuts;
   }
-  async function json(path) {
+  async function json(path, allowMissing = false) {
     const compressed = manifest?.compression === 'gzip' && path.startsWith('data/') && path !== 'data/manifest.json';
     const target = compressed ? path + '.gz' : path;
     const response = await fetch(target);
+    if (allowMissing && response.status === 404) return null;
     if (!response.ok) throw new Error(`Could not load ${target} (HTTP ${response.status}).`);
     if (compressed) {
       if (typeof DecompressionStream !== 'function') throw new Error('Please use a current browser to read this compressed cache data.');
@@ -185,12 +197,18 @@
       return span;
     }
     if (value.type) {
-      const target = link(value.type, value.id, `${value.id}: ${value.text}`);
       const preview = value.type === 'items' ? `https://chisel.weirdgloop.org/gazproj/icons/png/${value.id}.png` : value.type === 'cursors' ? cursorPreviews.get(Number(value.id)) : value.preview?.kind === 'image' ? value.preview.src : null;
+      const target = link(value.type, value.id, `${value.id}: ${value.text}`, !preview);
       if (preview) {
         const span = el('span',null,{class:value.type === 'items' ? 'stock-parsed-item' : value.type === 'cursors' ? 'cursor-reference' : 'config-reference'});
         const image = el('img',null,{src:preview,alt:'',width:'32',height:'32',loading:'lazy'});
-        image.onerror = () => { image.hidden = true; };
+        image.onerror = () => {
+          image.hidden = true;
+          if (!target.querySelector('.struct-icon')) {
+            const fallback = markerIcon(value.type);
+            if (fallback) target.prepend(fallback);
+          }
+        };
         span.append(image,target);
         return span;
       }
@@ -264,7 +282,8 @@
           const recordRows = Array.from({length:height}, () => {
             const row = view.body.insertRow(); row.dataset.dbrow = ref.id; return row;
           });
-          const rowLink = recordRows[0].insertCell(); rowLink.rowSpan = height; rowLink.append(parsed(ref));
+          const rowLink = recordRows[0].insertCell(); rowLink.rowSpan = height; rowLink.dataset.column = 'id';
+          rowLink.append(link(ref.type,ref.id,`${ref.id}: ${ref.text}`));
           columns.forEach((column, columnIndex) => {
             const values = columnValues[columnIndex];
             if (!values.length) {
@@ -409,12 +428,258 @@
     next.onclick = () => { offset += Number(count.value); render(); };
     render();
   }
+  async function configHistory() {
+    const info = manifest.history;
+    if (!info || page.endsWith('_params')) return null;
+    const chunk = Math.floor(Number(id) / info.chunkSize);
+    if (!info.chunks[page]?.includes(chunk)) return null;
+    return (await json(`data/history/${page}/${chunk}.json`))[Number(id)] || null;
+  }
+  function historyParameter(field) {
+    const base = field.identity?.field || field.field.split('[',1)[0];
+    if (base !== 'param') return null;
+    const entry = field.identity?.entry;
+    let identifier = entry?.type === 'param' && Number.isSafeInteger(entry.id) && entry.id >= 0 ? entry.id : null;
+    let name;
+    for (const raw of [field.field,field.after_field,field.before_field]) {
+      const match = raw?.match(/^param\[([^\]]+)\]$/);
+      if (!match) continue;
+      const numeric = match[1].match(/^(?:param_)?(\d+)$/);
+      if (identifier === null && numeric && Number.isSafeInteger(Number(numeric[1]))) identifier = Number(numeric[1]);
+      if (!numeric && !name) name = match[1];
+    }
+    return {id:identifier,name};
+  }
+  async function loadHistoryLabels(entry) {
+    if (!entry?.events.some(event => event.fields.some(field => historyParameter(field)))) return;
+    if (!parameterNames) {
+      const definitions = await json('data/params/index.json');
+      parameterNames = new Map(definitions.map(param => [Number(param.id),param.name]));
+    }
+  }
+  function historyFieldLabel(field) {
+    const param = historyParameter(field);
+    if (!param) return el('span',readableKey({key_name:field.identity?.field || field.field}),{class:'history-field-label'});
+    const current = parameterNames?.get(param.id);
+    const knownName = current && !/^param_\d+$/.test(current) ? current : param.name;
+    const key = knownName || (param.id !== null ? `param_${param.id}` : 'param');
+    const alias = !knownName && keyLabels.parameters[key];
+    const label = knownName || alias ? readableKey({kind:'param',key_name:key}) : param.id !== null ? `Parameter ${param.id}` : 'Parameter';
+    const title = current && knownName === current ? `Current parameter name: ${current} (ID ${param.id})` : alias ? `Parameter alias: ${alias}` : `Parameter: ${key}`;
+    return el('span',label,{class:'history-field-label',title});
+  }
+  function diffSequence(before, after) {
+    let start = 0, endBefore = before.length, endAfter = after.length;
+    while (start < endBefore && start < endAfter && before[start] === after[start]) start++;
+    while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
+    const result = before.slice(0, start).map(value => ({kind:'equal',value}));
+    const n = endBefore - start, m = endAfter - start;
+    // Bound work for very large values. Common prefixes and suffixes still stay unchanged.
+    if (n * m > 250000) {
+      before.slice(start,endBefore).forEach(value => result.push({kind:'removed',value}));
+      after.slice(start,endAfter).forEach(value => result.push({kind:'added',value}));
+    } else {
+      const width = m + 1, lengths = new Uint32Array((n + 1) * width);
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          lengths[i * width + j] = before[start + i] === after[start + j] ? 1 + lengths[(i + 1) * width + j + 1] : Math.max(lengths[(i + 1) * width + j],lengths[i * width + j + 1]);
+        }
+      }
+      let i = 0, j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && before[start + i] === after[start + j]) { result.push({kind:'equal',value:before[start + i]}); i++; j++; }
+        else if (i < n && (j === m || lengths[(i + 1) * width + j] >= lengths[i * width + j + 1])) result.push({kind:'removed',value:before[start + i++]});
+        else result.push({kind:'added',value:after[start + j++]});
+      }
+    }
+    before.slice(endBefore).forEach(value => result.push({kind:'equal',value}));
+    return result;
+  }
+  function historyDiff(before, after) {
+    const sides = {removed:[],added:[]};
+    const tokens = value => value.match(/[\p{L}_][\p{L}\p{N}_]*|\p{N}+|\s+|[^\s]/gu) || [];
+    let removed = [], added = [];
+    function flush() {
+      for (let i = 0; i < Math.max(removed.length,added.length); i++) {
+        if (i < removed.length && i < added.length) {
+          const parts = diffSequence(tokens(removed[i]),tokens(added[i]));
+          for (const side of ['removed','added']) sides[side].push(parts.filter(part => part.kind === 'equal' || part.kind === side));
+        } else {
+          if (i < removed.length) sides.removed.push([{kind:'removed',value:removed[i]}]);
+          if (i < added.length) sides.added.push([{kind:'added',value:added[i]}]);
+        }
+      }
+      removed = []; added = [];
+    }
+    for (const part of diffSequence(before || [],after || [])) {
+      if (part.kind === 'equal') {
+        flush();
+        sides.removed.push([part]); sides.added.push([part]);
+      } else (part.kind === 'removed' ? removed : added).push(part.value);
+    }
+    flush();
+    return sides;
+  }
+  function historyValue(values, highlights, side) {
+    const cell = el('td');
+    if (values === null || values === undefined) {
+      cell.append(el('span', 'Not present', {class:'muted history-absent'}));
+      return cell;
+    }
+    for (const [index,value] of values.entries()) {
+      const line = el('div', null, {class:'history-value'});
+      const parts = highlights[index];
+      if (value === '') {
+        const changed = parts.some(part => part.kind !== 'equal') || parts.length === 0;
+        line.append(el(changed ? side === 'removed' ? 'del' : 'ins' : 'span', '"" (empty string)', changed ? {class:`history-diff-${side}`} : {}));
+      } else {
+        // Text nodes keep cache markup literal, including inside highlighted fragments.
+        for (const part of parts) line.append(part.kind === 'equal' ? document.createTextNode(part.value) : el(side === 'removed' ? 'del' : 'ins', part.value, {class:`history-diff-${side}`}));
+      }
+      cell.append(line);
+    }
+    return cell;
+  }
+  function parsedHistoryValue(values, decoded) {
+    const cell = el('td');
+    if (values === null || values === undefined) {
+      cell.append(el('span', 'Not present', {class:'muted history-absent'}));
+      return cell;
+    }
+    for (const [index,value] of values.entries()) {
+      const line = el('div', null, {class:'history-value history-parsed-value',title:`Raw value: ${value}`});
+      if (value === '') line.textContent = '"" (empty string)';
+      else if (decoded?.[index]) line.append(parsed(decoded[index]));
+      else line.textContent = value;
+      // Keep adjacent table cells separate when comparing their displayed text.
+      line.querySelectorAll('.parsed-table th, .parsed-table td').forEach(cell => cell.append(document.createTextNode(' ')));
+      cell.append(line);
+    }
+    return cell;
+  }
+  function highlightHistoryValue(line, parts, side) {
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    let offset = 0;
+    const ranges = parts.map(part => {
+      const range = {start:offset,end:offset + part.value.length,changed:part.kind !== 'equal'};
+      offset = range.end;
+      return range;
+    });
+    offset = 0;
+    let index = 0;
+    for (const node of nodes) {
+      const end = offset + node.textContent.length;
+      const fragment = document.createDocumentFragment();
+      while (index < ranges.length && ranges[index].end <= offset) index++;
+      for (let i = index; i < ranges.length && ranges[i].start < end; i++) {
+        const range = ranges[i];
+        const text = node.textContent.slice(Math.max(range.start,offset) - offset,Math.min(range.end,end) - offset);
+        if (text) fragment.append(range.changed ? el(side === 'removed' ? 'del' : 'ins',text,{class:`history-diff-${side}`}) : document.createTextNode(text));
+      }
+      node.replaceWith(fragment);
+      offset = end;
+    }
+  }
+  function historyCells(field, mode) {
+    if (mode === 'raw') {
+      const changes = historyDiff(field.before,field.after);
+      return [historyValue(field.before,changes.removed,'removed'),historyValue(field.after,changes.added,'added')];
+    }
+    const cells = [parsedHistoryValue(field.before,field.before_parsed),parsedHistoryValue(field.after,field.after_parsed)];
+    const lines = cells.map(cell => [...cell.querySelectorAll(':scope > .history-value')]);
+    const changes = historyDiff(...lines.map(values => values.map(value => value.textContent)));
+    for (const [index,side] of ['removed','added'].entries()) lines[index].forEach((line,i) => highlightHistoryValue(line,changes[side][i],side));
+    return cells;
+  }
+  function appendHistory(entry) {
+    const info = manifest.history;
+    if (!info?.types.includes(page)) return;
+    const events = entry?.events || [];
+    main.append(el('h2', `History (${number(events.length)})`, {id:'history'}));
+    main.append(el('p', `Available comparisons: ${info.from} to ${info.through}. This is not a complete history of the cache.`, {class:'muted'}));
+    if (!events.length) {
+      main.append(el('p', 'No changes recorded in the imported comparisons.', {class:'muted'}));
+      return;
+    }
+    let mode = 'raw';
+    const refresh = [];
+    const format = el('fieldset',null,{class:'history-format'});
+    format.append(el('legend','History values'));
+    for (const value of ['raw','parsed']) {
+      const label = el('label');
+      const input = el('input',null,{type:'radio',name:'history-format',value});
+      input.checked = value === mode;
+      input.onchange = () => { if (input.checked) { mode = value; refresh.forEach(update => update()); } };
+      label.append(input,document.createTextNode(value === 'raw' ? ' Raw' : ' Parsed'));
+      format.append(label);
+    }
+    main.append(format);
+    const legend = el('p', null, {class:'history-legend'});
+    legend.append(el('span', 'Removed text', {class:'history-diff-removed'}), document.createTextNode(' · '), el('span', 'Added text', {class:'history-diff-added'}));
+    main.append(legend);
+    for (const event of [...events].reverse()) {
+      const report = info.reports[event.report];
+      const disclosure = el('details', null, {class:'history-entry'});
+      const summary = el('summary');
+      summary.append(el('time', report.after.date, {datetime:report.after.date}),
+        el('span', {added:'Added',removed:'Removed',modified:'Modified'}[event.kind], {class:`history-kind history-${event.kind}`}),
+        document.createTextNode(`Revision ${report.after.revision ?? '?'} · ${number(event.fields.length)} fields`));
+      disclosure.append(summary);
+      let rendered = false;
+      function render() {
+        if (rendered) return;
+        rendered = true;
+        const provenance = el('p', `${report.before.date} → ${report.after.date}`, {class:'muted'});
+        disclosure.append(provenance);
+        if (!event.fields.length) {
+          disclosure.append(el('p', 'No explicit field changes in this event.', {class:'muted'}));
+          return;
+        }
+        const view = table(['Field','Before','After']);
+        view.table.classList.add('history-table');
+        const more = el('button', 'Show more fields', {type:'button'});
+        let shown = 0;
+        function showMore() {
+          for (const field of event.fields.slice(shown, shown + 100)) {
+            const row = view.body.insertRow();
+            const key = row.insertCell();
+            key.append(historyFieldLabel(field), el('code', field.field));
+            key.title = [field.before_field,field.after_field].filter(Boolean).join(' → ');
+            function update() {
+              while (row.cells.length > 1) row.deleteCell(1);
+              row.append(...historyCells(field,mode));
+            }
+            refresh.push(update); update();
+          }
+          shown = Math.min(shown + 100, event.fields.length);
+          more.hidden = shown === event.fields.length;
+          more.textContent = `Show more fields (${number(event.fields.length - shown)} remaining)`;
+        }
+        more.onclick = showMore;
+        showMore(); disclosure.append(view.wrapper, more);
+      }
+      disclosure.addEventListener('toggle', () => { if (disclosure.open) render(); });
+      main.append(disclosure);
+    }
+  }
   async function detail() {
     const nativeField = page.endsWith('_params');
     if (!(nativeField ? /^[a-zA-Z0-9_]+$/ : /^\d+$/).test(id)) throw new Error(nativeField ? 'Enter a valid config field name.' : 'The config ID must be a non-negative integer.');
-    const chunk = await json(`data/${page}/${nativeField ? 'field-' + encodeURIComponent(id) : Math.floor(Number(id) / manifest.chunkSize)}.json`);
-    const data = chunk[nativeField ? id : Number(id)];
-    if (!data) throw new Error(`Could not find ${page} #${id}.`);
+    const [chunk, past] = await Promise.all([
+      json(`data/${page}/${nativeField ? 'field-' + encodeURIComponent(id) : Math.floor(Number(id) / manifest.chunkSize)}.json`, !nativeField),
+      configHistory(),
+    ]);
+    await loadHistoryLabels(past);
+    const data = chunk?.[nativeField ? id : Number(id)];
+    if (!data) {
+      if (!past) throw new Error(`Could not find ${page} #${id}.`);
+      heading(`${page.toUpperCase()} #${id}${past.name ? ': ' + past.name : ''}`);
+      main.append(el('p', 'This config is not present in the current dump.'));
+      appendHistory(past);
+      return;
+    }
     heading(`${page.toUpperCase()} #${id}${data.name ? ': ' + data.name : ''}`);
     const pageMetadata = el('dl', null, {class:'table-metadata', hidden:''});
     const isEnumDefinition = row => !row.parsedKey && ['inputtype','outputtype','default'].includes(row.key);
@@ -431,7 +696,7 @@
     main.append(configShortcuts(data), pageMetadata);
     function appendRows(rows, label) {
       const shared = [];
-      if (rows.length && !rows.every(isCs2Param)) {
+      if (page !== 'invs' && rows.length && !rows.every(isCs2Param)) {
         const firstName = String(rows[0].key_name ?? rows[0].key);
         const firstType = rows[0].type || 'unknown';
         if (rows.every(row => String(row.key_name ?? row.key) === firstName)) shared.push({key:'key_name', label:'Key name', value:readableKey(rows[0]), title:`Dump key: ${firstName}`});
@@ -535,6 +800,7 @@
     else main.append(el('p', 'This config has no explicit fields.'));
     if (data.uses?.length) { main.append(el('h2', `Parameter uses (${number(data.uses.length)})`)); appendRows(data.uses, 'uses'); }
     if (page === 'dbtables') await databaseRows(data);
+    appendHistory(past);
     main.append(el('h2', `References (${number(data.references.length)})`));
     if (data.references.length) {
       const groups = new Map();

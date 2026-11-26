@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import gzip
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -17,6 +18,7 @@ from .field_types import native_field_type
 from .achievement_values import achievement_value
 from .quickchat_values import phrase_value
 from .extra_configs import PREVIEW_KEYS, native_values
+from .history import history_digest, prepare_history
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
@@ -47,9 +49,13 @@ SYMBOL_FILES = {"graphic": "graphic", "category": "category", "stat": "stat", "v
 
 
 def request(url):
-    return urllib.request.urlopen(urllib.request.Request(url, headers={
+    headers = {
         "User-Agent": "rs3-structs-viewer/1.0", "Accept": "application/vnd.github+json",
-    }), timeout=120)
+    }
+    token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+    if token and url.startswith('https://api.github.com/'):
+        headers['Authorization'] = f'Bearer {token}'
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
 
 
 def parse_dump(lines):
@@ -383,6 +389,9 @@ def main():
     parser.add_argument("--symbols-dir", type=Path, help="Optional symbols directory for local dumps (graphic/category/stat/varp .sym files)")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--compress-json", action="store_true", help="Store data as .json.gz for size-limited static hosts such as GitHub Pages")
+    parser.add_argument("--history-dir", type=Path, default=ROOT / "history", help="Imported CachePages history directory (default: history)")
+    parser.add_argument("--no-history", action="store_true", help="Build without imported config history")
+    parser.add_argument("--pipeline-state", type=Path, help="State written by pipeline.refresh, for deployment freshness checks")
     args = parser.parse_args()
     revision = args.ref
     if not args.dump_dir:
@@ -395,6 +404,12 @@ def main():
             list(executor.map(lambda path: download_file(path, revision, cache), paths))
     else:
         cache = args.dump_dir.resolve()
+    pipeline = None
+    if args.pipeline_state:
+        state = json.loads(args.pipeline_state.read_text(encoding='utf-8'))
+        if args.no_history or state['revision'] != revision or state['history_digest'] != history_digest(args.history_dir):
+            raise ValueError('Pipeline state does not match the selected dump and retained history; refresh it before building')
+        pipeline = {key:state[key] for key in ('source_digest','history_digest')}
     records, hashes = {}, {}
     for page, kind in FILES.items():
         path = cache / f"dump.{kind}"
@@ -414,14 +429,22 @@ def main():
                 hashes[f"symbols/{path.name}"] = hashlib.file_digest(source, "sha256").hexdigest()
     args.output.mkdir(parents=True, exist_ok=True)
     counts = BrowserData(records, symbols).build(args.output)
+    # Full revision history is large; release the current dump before expanding it.
+    del records, symbols
     for name in ("index.html", "structs.js", "style.css", "key_labels.json"):
         shutil.copyfile(FRONTEND / name, args.output / name)
+    shutil.copytree(FRONTEND / 'images',args.output / 'images',dirs_exist_ok=True)
+    history = None if args.no_history else prepare_history(args.history_dir, args.output, FILES, TYPE_PAGES, revision)
     if args.compress_json:
         print("Compressing generated JSON for static hosting", flush=True)
         compress_json_files(args.output)
     manifest = {"repository": REPO, "revision": revision, "local": bool(args.dump_dir), "built": datetime.now(timezone.utc).isoformat(), "chunkSize": CHUNK_SIZE, "counts": counts, "sha256": hashes}
     if args.compress_json:
         manifest["compression"] = "gzip"
+    if history:
+        manifest["history"] = history
+    if pipeline:
+        manifest['pipeline'] = pipeline
     write_json(args.output / "data" / "manifest.json", manifest)
     print(f"Built {sum(counts.values()):,} entries in {args.output}")
     print("Run: python tools/serve.py")

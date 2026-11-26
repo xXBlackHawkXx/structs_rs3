@@ -1,7 +1,6 @@
 name: Build and deploy cache viewer
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       dump_ref:
@@ -25,11 +24,11 @@ env:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     permissions:
-      contents: read
+      # Retain validated comparison inputs; bot pushes do not start another run.
+      contents: write
       pages: read
     steps:
       - name: Check out source
@@ -40,31 +39,51 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Check GitHub Pages configuration
+        id: pages
+        uses: actions/configure-pages@v6.0.0
+
+      - name: Test comparison generator and importer
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: python -m unittest discover -s tests -v
+
+      - name: Refresh revision history
+        id: refresh
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+        run: python -m pipeline.refresh --ref "$DUMP_REF" --pages-url "$PAGES_URL" --github-output "$GITHUB_OUTPUT" --force
+
       - name: Set up Node for frontend checks
+        if: steps.refresh.outputs.build == 'true'
         uses: actions/setup-node@v7.1.0
         with:
           node-version: '24'
 
-      - name: Check GitHub Pages configuration
-        uses: actions/configure-pages@v6.0.0
-
-      - name: Test importer and frontend syntax
+      - name: Check frontend syntax
+        if: steps.refresh.outputs.build == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          python -m unittest discover -s tests -v
           node --check frontend/structs.js
 
       - name: Build compressed static site
+        if: steps.refresh.outputs.build == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
-        run: python -m builder.build --ref "$DUMP_REF" --compress-json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVISION: ${{ steps.refresh.outputs.revision }}
+        run: python -m builder.build --ref "$REVISION" --pipeline-state .cache/pipeline/state.json --compress-json
 
       - name: Test generated site
+        if: steps.refresh.outputs.build == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           npm install --prefix .cache/frontend-check --no-save --ignore-scripts jsdom@29.1.1
           node tests/test_frontend.cjs --smoke
 
       - name: Check published size
+        if: steps.refresh.outputs.build == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           python - <<'PY'
@@ -79,13 +98,28 @@ jobs:
               summary.write(f'Published site size: **{size / 2**20:.1f} MiB**\n')
           PY
 
+      - name: Retain validated revision history
+        if: steps.refresh.outputs.history_changed == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REVISION: ${{ steps.refresh.outputs.revision }}
+        run: |
+          git add -- "$PROJECT_DIR/history/manifest.json" "$PROJECT_DIR/history/reports"
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Update cache history for $REVISION"
+            git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
+          fi
+
       - name: Upload Pages artifact
+        if: steps.refresh.outputs.build == 'true'
         uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: ${{ env.PROJECT_DIR }}/dist
+    outputs:
+      publish: ${{ steps.refresh.outputs.build }}
 
   deploy:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: needs.build.outputs.publish == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -15,8 +15,12 @@ async function open(query, replacement, replacementPath = 'data/items/0.json') {
   dom.window.Response = Response;
   dom.window.DecompressionStream = DecompressionStream;
   dom.window.fetch = async relative => {
-    const isReplacement = replacement && [replacementPath, replacementPath + '.gz'].includes(relative);
-    let bytes = isReplacement ? Buffer.from(JSON.stringify(replacement)) : fs.readFileSync(path.join(dataRoot, relative));
+    const plainPath = relative.replace(/\.gz$/, '');
+    const isReplacement = replacement instanceof Map ? replacement.has(plainPath) : replacement && [replacementPath, replacementPath + '.gz'].includes(relative);
+    const value = replacement instanceof Map ? replacement.get(plainPath) : replacement;
+    if (isReplacement && value === null) return new Response('', {status:404});
+    if (!isReplacement && !fs.existsSync(path.join(dataRoot, relative))) return new Response('', {status:404});
+    let bytes = isReplacement ? Buffer.from(JSON.stringify(value)) : fs.readFileSync(path.join(dataRoot, relative));
     if (isReplacement && relative.endsWith('.gz')) bytes = gzipSync(bytes);
     return new Response(bytes);
   };
@@ -110,28 +114,66 @@ async function run() {
   for (const [query,type,iconType] of [
     ['?type=dbtables&id=29','structs','struct'],
     ['?type=dbrows&id=1280','structs','struct'],
-    ['?type=structs','structs','struct'],
     ['?type=dbtables&id=88','dbrows','dbrow'],
-    ['?type=dbrows','dbrows','dbrow'],
     ['?type=achievements&id=2241','achievements','achievement'],
-    ['?type=enums','enums','enum'],
-    ['?type=quests','quests','quest'],
-    ['?type=npcs','npcs','npc'],
     ['?type=quests&id=257','npcs','npc'],
   ]) {
     dom = await open(query);
     try {
-      const links = [...dom.window.document.querySelectorAll(`a[href^="index.html?type=${type}&id="]`)];
+      const links = [...dom.window.document.querySelectorAll(`a[href^="index.html?type=${type}&id="]`)].filter(target=>!target.closest('[data-column="id"]'));
       assert.ok(links.length, `Expected ${type} links on ${query}`);
       for (const target of links) {
         const icon = target.firstElementChild;
         assert.equal(icon.tagName,'IMG');
-        assert.equal(icon.src,`https://chisel.weirdgloop.org/structs_rs3/images/${iconType}-icon.png`);
+        assert.equal(icon.getAttribute('src'),`images/${iconType}-icon.png`);
+        assert.equal(icon.src,`http://localhost/images/${iconType}-icon.png`);
+        assert.ok(fs.existsSync(path.join(dataRoot,'images',`${iconType}-icon.png`)),'Marker icons must be included in the published site');
         assert.equal(icon.width,11);
         assert.equal(icon.height,11);
         assert.equal(icon.alt,'');
         assert.ok(target.textContent, 'The config link label must remain visible');
       }
+    } finally { dom.window.close(); }
+  }
+
+  const markerTypes = {structs:'struct',dbrows:'dbrow',achievements:'achievement',enums:'enum',quests:'quest',npcs:'npc',idkits:'idkit',invs:'inv',varplayerbits:'varplayerbit',params:'param',dbtables:'dbtable',items:'item',scenery:'scenery',cursors:'cursor',quickchatcategories:'quickchatcategory',quickchatphrases:'quickchatphrase',varplayers:'varplayer',mapelements:'mapelement',mapsceneicons:'mapsceneicon',animationsets:'animationset',sequences:'sequence',spoteffects:'spoteffect',hitsplats:'hitsplat',healthbars:'healthbar'};
+  const markerValues = Object.keys(markerTypes).map(type=>({type,id:1,text:`${type} example`,...(type==='mapelements' ? {preview:{kind:'image',src:'https://example.test/map-preview.png',text:'Map preview'}} : {})}));
+  const markerFixture = {id:3,name:'marker_fixture',rows:[{key:'example',raw:'',type:'unknown',parsed:markerValues}],references:markerValues};
+  dom = await open('?type=items&id=3',{'3':markerFixture});
+  try {
+    const doc = dom.window.document;
+    for (const [type,iconType] of Object.entries(markerTypes)) {
+      for (const selector of ['main > .table-wrap','.reference-list']) {
+        const links = [...doc.querySelectorAll(`${selector} a`)].filter(target=>target.getAttribute('href')===`index.html?type=${type}&id=1`);
+        assert.ok(links.length,`${type} must render in ${selector}`);
+        for (const target of links) {
+          let image = target.querySelector('img.struct-icon');
+          const preview = target.parentElement.querySelector(':scope > img');
+          if (preview) {
+            assert.equal(image,null,'An individual sprite should not also show a type badge');
+            assert.equal(preview.width,32);
+            preview.dispatchEvent(new dom.window.Event('error'));
+            assert.equal(preview.hidden,true);
+            image = target.querySelector('img.struct-icon');
+            preview.dispatchEvent(new dom.window.Event('error'));
+            assert.equal(target.querySelectorAll('img.struct-icon').length,1,'A failing sprite adds only one fallback marker');
+          }
+          assert.ok(image,`${type} typed values and references must include their available icon`);
+          assert.equal(image.getAttribute('src'),`images/${iconType}-icon.png`);
+          assert.equal(image.width,11);
+          assert.equal(image.height,11);
+          assert.ok(fs.existsSync(path.join(dataRoot,'images',`${iconType}-icon.png`)));
+        }
+      }
+    }
+  } finally { dom.window.close(); }
+
+  for (const type of Object.keys(markerTypes)) {
+    dom = await open(`?type=${type}`);
+    try {
+      const cells = [...dom.window.document.querySelectorAll('main > .table-wrap > table > tbody > tr > td:first-child')];
+      assert.ok(cells.length,`${type} listing has ID cells`);
+      assert.ok(cells.every(cell=>cell.querySelector('a') && !cell.querySelector('img')),`${type} listing IDs must be text links without icons`);
     } finally { dom.window.close(); }
   }
 
@@ -221,6 +263,7 @@ async function run() {
       ['index.html?type=items&id=49445','10'],
     ]);
     assert.equal(entries[0].cells[0].rowSpan,2);
+    assert.equal(entries[0].cells[0].querySelector('img'),null,'Database record identifiers must not show marker icons');
     const plainItem = column(entries[0],'col14');
     assert.equal(plainItem.querySelector('a').getAttribute('href'),'index.html?type=items&id=49516');
     assert.equal(plainItem.querySelector('.stock-parsed-item').firstElementChild.tagName,'IMG');
@@ -291,6 +334,21 @@ async function run() {
       assert.equal(column(rows[0],'parsed_val').colSpan,2, 'Other values must span both parsed columns');
     } finally { dom.window.close(); }
   }
+
+  dom = await open('?type=invs&id=528');
+  try {
+    const doc = dom.window.document;
+    const fields = section(doc,'Native fields');
+    const view = fields.find(node=>node.classList.contains('table-wrap')).querySelector('table');
+    assert.deepEqual([...view.tHead.rows[0].cells].map(cell=>cell.textContent),['raw_key','key_name','raw_val','type','parsed_val']);
+    assert.equal(view.tBodies[0].rows.length,1);
+    const row = view.tBodies[0].rows[0];
+    assert.equal(column(row,'raw_key').textContent,'size');
+    assert.equal(column(row,'key_name').textContent,'Inventory capacity');
+    assert.equal(column(row,'type').textContent,'int');
+    assert.ok([...doc.querySelectorAll('main > .table-metadata')].every(node=>node.hidden));
+    assert.ok(!fields.some(node=>node.classList.contains('table-metadata')));
+  } finally { dom.window.close(); }
 
   dom = await open('?type=scenery&id=116381');
   try {
@@ -593,6 +651,7 @@ async function smoke() {
       assert.equal(doc.querySelector('main .error'),null,`${type} listing failed`);
       assert.equal(doc.querySelector('#config-type').value,type);
       assert.equal(doc.querySelectorAll('main > .table-wrap > table > tbody > tr').length,Math.max(1,Math.min(100,count)));
+      assert.equal(doc.querySelector('main > .table-wrap > table > tbody > tr > td:first-child img'),null,`${type} listing ID cells must not contain icons`);
     } finally { dom.window.close(); }
     if (!entries.length) continue;
     const entry = entries.find(entry=>entry.size>0) || entries[0];
@@ -607,4 +666,186 @@ async function smoke() {
   console.log(`Passed: listing and detail rendering for all ${Object.keys(manifest.counts).length} generated config types (${manifest.compression || 'plain'} JSON).`);
 }
 
-(process.argv.includes('--smoke') ? smoke() : run()).catch(error => { console.error(error); process.exitCode = 1; });
+async function historyChecks() {
+  function expandHistory(dom) {
+    const entries = [...dom.window.document.querySelectorAll('.history-entry')];
+    assert.ok(entries.length);
+    assert.ok(entries.every(entry => !entry.open),'All history entries start collapsed');
+    assert.equal(dom.window.document.querySelector('.history-table'),null,'History tables render only when opened');
+    entries[0].open = true;
+    entries[0].dispatchEvent(new dom.window.Event('toggle'));
+  }
+  function format(dom,value) {
+    const input = dom.window.document.querySelector(`.history-format input[value="${value}"]`);
+    assert.ok(input,`History ${value} toggle exists`);
+    input.checked = true;
+    input.dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(dataRoot,'data/manifest.json'),'utf8'));
+  manifest.history = {chunkSize:64,chunks:{items:[0]},types:['items'],from:'2026-11-01',through:'2026-11-02',typePages:{struct:'structs'},
+    reports:[{before:{date:'2026-11-01',sha:'a'.repeat(40)},after:{date:'2026-11-02',revision:'951',sha:'b'.repeat(40)}}]};
+  const fields = Array.from({length:101}, (_,i)=>({field:`field${i}`,before_field:`field${i}`,after_field:`field${i}`,
+    before:i===0 ? null : ['','null','<img src=x onerror=alert(1)>'], after:['same_name'],
+    before_references:i===1 ? [{type:'struct',id:624},{type:'model',id:99}] : [],
+    after_references:i===1 ? [{type:'struct',id:625}] : []}));
+  fields[100].after_parsed = [{type:'structs',id:625,text:'Historical struct'}];
+  const replacements = new Map([
+    ['data/manifest.json',manifest], ['data/items/0.json',null],
+    ['data/history/items/0.json',{'3':{id:3,name:'removed_example',events:[{report:0,kind:'removed',fields}]}}],
+  ]);
+  let dom = await open('?type=items&id=3',replacements);
+  try {
+    const doc = dom.window.document;
+    assert.equal(doc.querySelector('.error'),null);
+    assert.match(doc.querySelector('main').textContent,/not present in the current dump/);
+    assert.ok(doc.querySelector('#history'));
+    expandHistory(dom);
+    const view = doc.querySelector('.history-table');
+    assert.equal(view.tBodies[0].rows.length,100);
+    assert.equal(view.tBodies[0].rows[0].cells[1].textContent,'Not present');
+    assert.match(view.tBodies[0].rows[1].cells[1].textContent,/"" \(empty string\)/);
+    assert.equal(view.querySelector('img[src="x"]'),null,'Historical values must render as text');
+    assert.equal(view.querySelector('a'),null,'History must not show reference links');
+    assert.ok(!view.textContent.includes('struct #624'));
+    assert.ok(!view.textContent.includes('model #99'));
+    doc.querySelector('.history-entry > button').click();
+    assert.equal(view.tBodies[0].rows.length,101);
+    assert.equal(doc.querySelector('.history-entry > button').hidden,true);
+    assert.equal(doc.querySelector('.history-format input[value="raw"]').checked,true);
+    format(dom,'parsed');
+    assert.equal(view.tBodies[0].rows.length,101,'Toggling preserves expanded field pagination');
+    const last = view.tBodies[0].rows[100];
+    assert.equal(last.cells[2].querySelector('a').getAttribute('href'),'index.html?type=structs&id=625');
+    assert.equal(view.querySelector('img[src="x"]'),null,'Parsed fallback text remains safe');
+    assert.equal(view.tBodies[0].rows[0].cells[1].textContent,'Not present');
+    format(dom,'raw');
+    assert.equal(view.querySelector('a'),null);
+    assert.equal(last.cells[2].textContent,'same_name');
+  } finally { dom.window.close(); }
+  const changedFields = [
+    {field:'statprereq',before:['0,115,Skill: 115 Slayer,slayer'],after:['0,95,Skill: 95 Slayer,slayer'],
+      before_references:[{value_index:0,path:[3],type:'stat',id:18}],after_references:[{value_index:0,path:[3],type:'stat',id:18}]},
+    {field:'repeated',before:['one','two'],after:['new','one','two']},
+    {field:'empty',before:[''],after:['value']},
+    {field:'empty_unchanged',before:['','old'],after:['','new']},
+    {field:'punctuation',before:['café: 10!'],after:['café: 10?']},
+    {field:'reference_only',before:['same_name'],after:['same_name'],before_references:[{type:'model',id:99}],after_references:[{type:'model',id:100}]},
+    {field:'long',before:['prefix ' + 'old,'.repeat(400) + ' suffix'],after:['prefix ' + 'new;'.repeat(400) + ' suffix']},
+    {field:'removed',before:['gone'],after:null},
+    {field:'added_empty',before:null,after:['']},
+  ];
+  replacements.set('data/history/items/0.json',{'3':{id:3,name:'diff_example',events:[{report:0,kind:'modified',fields:changedFields}]}});
+  dom = await open('?type=items&id=3',replacements);
+  try {
+    const doc = dom.window.document;
+    expandHistory(dom);
+    const rows = [...doc.querySelectorAll('.history-table tbody tr')];
+    const highlights = (cell,tag) => [...cell.querySelectorAll(`.history-value ${tag}`)].map(node=>node.textContent);
+    assert.deepEqual(highlights(rows[0].cells[1],'del'),['115','115']);
+    assert.deepEqual(highlights(rows[0].cells[2],'ins'),['95','95']);
+    assert.equal(rows[0].querySelector('.history-reference'),null,'Unchanged unsupported metadata must not appear as raw diff text');
+    assert.equal(rows[0].cells[1].textContent,changedFields[0].before[0]);
+    assert.equal(rows[0].cells[2].textContent,changedFields[0].after[0]);
+    assert.deepEqual(highlights(rows[1].cells[1],'del'),[]);
+    assert.deepEqual(highlights(rows[1].cells[2],'ins'),['new']);
+    assert.equal(rows[1].cells[1].textContent,'onetwo');
+    assert.deepEqual(highlights(rows[2].cells[1],'del'),['"" (empty string)']);
+    assert.deepEqual(highlights(rows[3].cells[1],'del'),['old']);
+    assert.deepEqual(highlights(rows[4].cells[1],'del'),['!']);
+    assert.deepEqual(highlights(rows[4].cells[2],'ins'),['?']);
+    assert.deepEqual(highlights(rows[5].cells[1],'del'),[],'Equal raw text must not be marked as changed');
+    assert.equal(rows[5].cells[1].textContent,'same_name');
+    assert.equal(rows[5].cells[2].textContent,'same_name');
+    assert.equal(doc.querySelector('.history-reference'),null,'History must not show resolved reference labels');
+    assert.equal(rows[6].cells[1].textContent,changedFields[6].before[0]);
+    assert.equal(rows[6].cells[2].textContent,changedFields[6].after[0]);
+    assert.ok(!highlights(rows[6].cells[1],'del').join('').includes('prefix'));
+    assert.ok(!highlights(rows[6].cells[2],'ins').join('').includes('suffix'));
+    assert.deepEqual(highlights(rows[7].cells[1],'del'),['gone']);
+    assert.deepEqual(highlights(rows[8].cells[2],'ins'),['"" (empty string)']);
+  } finally { dom.window.close(); }
+  const parameterFields = [
+    {field:'param[param_1326]',identity:{field:'param',entry:{type:'param',id:1326}},before:['12'],after:null},
+    {field:'param[param_751]',identity:{field:'param',entry:{type:'param',id:751}},before:['attack'],after:['strength']},
+    {field:'param[param_237]',identity:{field:'param',entry:{type:'param',id:237}},before:['0'],after:['1']},
+    {field:'param[param_999999]',identity:{field:'param',entry:{type:'param',id:999999}},before:['0'],after:['1']},
+    {field:'param[historical_only_name]',identity:{field:'param',entry:{type:'param',id:999998}},before:['0'],after:['1']},
+    {field:'param[param_5551]',before:['old'],after:['new']},
+    {field:'param[param_1326]',identity:{field:'param',entry:{type:'param',id:5551}},before:['old'],after:['new']},
+  ];
+  replacements.set('data/history/items/0.json',{'3':{id:3,name:'parameter_labels',events:[{report:0,kind:'modified',fields:parameterFields}]}});
+  replacements.set('data/params/index.json',[
+    {id:1326,name:'constitution_increase'},{id:751,name:'wear_requires_stat2'},
+    {id:237,name:'param_237'},{id:5551,name:'invent_augmented_version'},
+  ]);
+  dom = await open('?type=items&id=3',replacements);
+  try {
+    const doc = dom.window.document;
+    expandHistory(dom);
+    const rows = [...doc.querySelectorAll('.history-table tbody tr')];
+    const labels = rows.map(row => row.querySelector('.history-field-label').textContent);
+    assert.deepEqual(labels,['Constitution increase','Wear requires stat 2','Is god arrows 2','Parameter 999999','Historical only name','Invent augmented version','Invent augmented version']);
+    assert.deepEqual(rows.map(row => row.cells[0].querySelector('code').textContent),parameterFields.map(field=>field.field),'Historical field keys remain verbatim');
+    assert.equal(rows[0].querySelector('.history-field-label').title,'Current parameter name: constitution_increase (ID 1326)');
+    assert.equal(rows[0].cells[0].querySelector('a'),null,'Field labels do not add reference links');
+    format(dom,'parsed');
+    assert.deepEqual(rows.map(row=>row.querySelector('.history-field-label').textContent),labels);
+    assert.equal(rows[0].cells[0].querySelector('code').textContent,'param[param_1326]');
+  } finally { dom.window.close(); }
+  replacements.delete('data/params/index.json');
+  replacements.set('data/items/0.json',{'4':{id:4,name:'unchanged',rows:[],references:[]}});
+  dom = await open('?type=items&id=4',replacements);
+  try {
+    assert.match(dom.window.document.querySelector('main').textContent,/No changes recorded in the imported comparisons/);
+  } finally { dom.window.close(); }
+  console.log('Passed: history text highlighting without references, removed configs, coverage and field pagination.');
+  const actual = JSON.parse(fs.readFileSync(path.join(dataRoot,'data/manifest.json'),'utf8'));
+  if (actual.revision === 'd215783ad35d9c7ff2e6d3562ebfd0a0abbde916' && actual.history) {
+    dom = await open('?type=enums&id=1467');
+    try {
+      const doc = dom.window.document;
+      assert.match(doc.querySelector('.history-entry').textContent,/2026-11-17/);
+      expandHistory(dom);
+      const row = doc.querySelector('.history-table tbody tr');
+      assert.match(row.cells[1].textContent,/login_facebook_data/);
+      assert.equal(row.cells[2].textContent,'Not present');
+      assert.equal(row.cells[1].textContent,'login_facebook_data');
+      assert.equal(row.querySelector('a'),null);
+      format(dom,'parsed');
+      const target = row.cells[1].querySelector('a');
+      assert.equal(target.getAttribute('href'),'index.html?type=structs&id=624');
+      assert.equal(target.querySelector('img').width,11);
+      assert.ok(!row.textContent.includes('References:'));
+      format(dom,'raw');
+      assert.equal(row.cells[1].textContent,'login_facebook_data');
+    } finally { dom.window.close(); }
+    dom = await open('?type=items&id=231');
+    try {
+      expandHistory(dom);
+      const row = dom.window.document.querySelector('.history-table tbody tr');
+      assert.match(row.cells[0].textContent,/param\[levelrequire\]/);
+      assert.equal(row.cells[1].textContent,'80');
+      assert.equal(row.cells[2].textContent,'34');
+    } finally { dom.window.close(); }
+    dom = await open('?type=achievements&id=1350');
+    try {
+      const doc = dom.window.document;
+      expandHistory(dom);
+      const row = [...doc.querySelectorAll('.history-table tbody tr')].find(row=>row.cells[0].textContent.includes('statprereq'));
+      assert.ok(row,'Achievement 1350 includes the Slayer prerequisite change');
+      assert.deepEqual([...row.cells[1].querySelectorAll('del')].map(node=>node.textContent),['115','115']);
+      assert.deepEqual([...row.cells[2].querySelectorAll('ins')].map(node=>node.textContent),['95','95']);
+      assert.ok(!row.textContent.includes('stat #18'));
+      format(dom,'parsed');
+      assert.equal(row.querySelectorAll('.parsed-table').length,2,'Parsed prerequisites use the standard requirement tables');
+      assert.deepEqual([...row.cells[1].querySelectorAll('del')].map(node=>node.textContent),['115','115']);
+      assert.deepEqual([...row.cells[2].querySelectorAll('ins')].map(node=>node.textContent),['95','95']);
+      assert.ok(!row.textContent.includes('stat #18'));
+      format(dom,'raw');
+      assert.equal(row.querySelector('.parsed-table'),null);
+    } finally { dom.window.close(); }
+    console.log('Passed: imported enum 1467, item 231 and achievement 1350 history.');
+  }
+}
+
+(async () => { await historyChecks(); await (process.argv.includes('--smoke') ? smoke() : run()); })().catch(error => { console.error(error); process.exitCode = 1; });
