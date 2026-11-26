@@ -120,7 +120,7 @@
     const configType = configTypes[owner];
     const typeLabel = fieldPage ? `${configType} field` : configType;
     const name = data.display || data.rows.find(row => !row.parsedKey && row.key === 'name')?.raw || data.name || `${typeLabel} ${id}`;
-    const showLinks = ['items','achievements','scenery','quests','structs'].includes(page);
+    const showLinks = ['items','npcs','achievements','scenery','quests','structs'].includes(page);
     const shortcuts = el('div', null, {class: showLinks ? 'config-shortcuts' : 'config-graphic', role: 'group', 'aria-label': `${typeLabel} ${showLinks ? 'links' : 'preview'}`});
     if (page === 'items') {
       const icon = el('img', null, {src: `https://chisel.weirdgloop.org/gazproj/icons/png/${id}.png`, alt: `${name} icon`});
@@ -143,17 +143,21 @@
     const cursorTarget = cursorGraphic?.src || `https://github.com/${manifest.repository}/blob/${manifest.revision}/config/dump.cursor`;
     const quickchat = ['quickchatcategories','quickchatphrases'].includes(owner);
     const sourceDump = quickchat || Object.hasOwn(extraConfigTypes, owner);
-    const chisel = sourceDump ? `https://github.com/${manifest.repository}/blob/${manifest.revision}/config/dump.${configType}` : tool ? `https://chisel.weirdgloop.org/gazproj/${tool}?${id}#${Number(id) - 15}-${Number(id) + 15}` : owner === 'cursors' ? cursorTarget : owner === 'scenery' ? 'https://chisel.weirdgloop.org/gazproj/mrod' : `https://chisel.weirdgloop.org/structs_rs3/${fieldPage ? 'index.html?' + new URLSearchParams({type:page}) : url(page,id)}`;
-    const property = {items:'All Item ID',npcs:'All NPC ID'}[page];
-    const idSearch = property ? wiki + 'Special:SearchByProperty?' + new URLSearchParams({limit:'20',property,value:id}) : search(`${typeLabel} "${id}"`);
+    const lookupQuery = new URLSearchParams({q:`${Math.max(0,Number(id) - 15)}-${Number(id) + 15}`,h:id});
+    const chisel = sourceDump ? `https://github.com/${manifest.repository}/blob/${manifest.revision}/config/dump.${configType}` : tool ? `https://chisel.weirdgloop.org/gazproj/${tool}?${lookupQuery}` : owner === 'cursors' ? cursorTarget : owner === 'scenery' ? 'https://chisel.weirdgloop.org/gazproj/mrod' : `https://chisel.weirdgloop.org/structs_rs3/${fieldPage ? 'index.html?' + new URLSearchParams({type:page}) : url(page,id)}`;
+    const bucket = {items:'item_id',npcs:'npc_id',quests:'quest_id'}[page];
+    const idSearch = bucket ? wiki + 'Special:Bucket?' + new URLSearchParams({bucket,select:'*',where:`{"id",${Number(id)}}`}) : search(`${typeLabel} "${id}"`);
     const targets = [
       ['m', chisel, sourceDump ? 'Open source config dump' : tool ? `Lookup this ID in ${tool.toUpperCase()}` : owner === 'cursors' ? cursorGraphic ? 'Open cursor graphic' : 'Open cursor config dump' : owner === 'scenery' ? 'Browse scenery in MROD' : fieldPage ? 'Browse this field type in Chisel' : 'Open this config in Chisel'],
       ['p', fieldPage ? search(wikiName) : wiki + encodeURIComponent(wikiName.replaceAll(' ', '_')), fieldPage ? 'Find wiki documentation for this field' : 'Go to this wiki page'],
       ['s', search(fieldPage ? wikiName : name), 'Search the wiki for this name'],
       ['l', fieldPage ? search(wikiName) : wiki + 'Special:Lookup?' + new URLSearchParams({type:configType,id,name:wikiName}), fieldPage ? 'Find wiki documentation for this field' : 'Wiki lookup by ID (falls back to name)'],
-      ['i', idSearch, `Search the wiki for this ${typeLabel} ${fieldPage ? 'name' : 'ID'}`],
+      [bucket ? 'b' : 'i', idSearch, bucket ? `Search Wiki Bucket for this ${typeLabel} ID` : `Search the wiki for this ${typeLabel} ${fieldPage ? 'name' : 'ID'}`],
     ];
-    for (const [label, href, title] of targets) shortcuts.append(el('a', label, {href, title, 'aria-label': title, target: '_blank', rel: 'noopener noreferrer'}));
+    for (const [label, href, title] of targets) {
+      if (label === 'm' && !tool) continue;
+      shortcuts.append(el('a', label, {href, title, 'aria-label': title, target: '_blank', rel: 'noopener noreferrer'}));
+    }
     return shortcuts;
   }
   async function json(path, allowMissing = false) {
