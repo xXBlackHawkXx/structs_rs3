@@ -80,6 +80,13 @@ def variable_type(browser, value):
 
 def native_values(browser, page, key, value, value_type, source, split_values):
     resolve = lambda part, kind: browser.resolve(part, kind, source)
+    if value_type in {'model', 'category', 'stat'}:
+        return [resolve(value, value_type)]
+    if value_type == 'stat, int':
+        return [resolve(part, 'stat' if i == 0 else 'int') for i, part in enumerate(split_values(value))]
+    if value_type in {'loc shape, model', 'int, int, int, model'}:
+        parts = split_values(value)
+        return [resolve(part, 'model' if i == len(parts) - 1 else '') for i, part in enumerate(parts)]
     if key == 'multivar' and page in {'mapelements','hitsplats','npcs','scenery'}:
         return [resolve(value, variable_type(browser, value))]
     if page == 'mapelements' and key in {'condition', 'condition2'}:

@@ -38,14 +38,15 @@ PARAM_PAGES = {
     "quest_params": "quests", "varplayerbit_params": "varplayerbits", "scenery_params": "scenery", "cursor_params": "cursors",
 }
 FIELD_PAGES = frozenset(PARAM_PAGES.values())
+LOOKUP_PAGES = {"models": "model", "categories": "category", "stats": "stat"}
 TYPE_PAGES = {v: k for k, v in FILES.items()} | {
     "namedobj": "items", "varplayerbit": "varplayerbits", "idkit": "idkits", "object": "scenery",
     "chatcat": "quickchatcategories", "chatphrase": "quickchatphrases",
     "varplayer": "varplayers", "mapelement": "mapelements", "mapsceneicon": "mapsceneicons", "spotanim": "spoteffects",
-}
+} | {kind: page for page, kind in LOOKUP_PAGES.items()}
 DISPLAY_FIELDS = {"quickchatcategories": "desc", "quickchatphrases": "phrase", "mapelements": "text"}
 CHUNK_SIZE = 128
-SYMBOL_FILES = {"graphic": "graphic", "category": "category", "stat": "stat", "varplayer": "varp"}
+SYMBOL_FILES = {"graphic": "graphic", "category": "category", "stat": "stat", "varplayer": "varp", "model": "model"}
 
 
 def request(url):
@@ -168,9 +169,13 @@ class BrowserData:
     unquote = staticmethod(unquote)
 
     def __init__(self, records, symbols=None):
-        self.records = records
         self.symbols = symbols or {}
-        self.names = {page: {r["name"]: r["id"] for r in rows.values()} for page, rows in records.items()}
+        self.records = records | {
+            page: {identifier: {"id": identifier, "name": name, "fields": []}
+                   for name, identifier in self.symbols.get(kind, {}).items()}
+            for page, kind in LOOKUP_PAGES.items()
+        }
+        self.names = {page: {r["name"]: r["id"] for r in rows.values()} for page, rows in self.records.items()}
         self.refs = defaultdict(set)
         self.uses = defaultdict(list)
         self.field_uses = defaultdict(list)
@@ -196,7 +201,12 @@ class BrowserData:
             if target is not None:
                 if source is not None:
                     self.refs[page, target].add(source)
-                label = unquote(field(self.records[page][target], DISPLAY_FIELDS[page])) if page in DISPLAY_FIELDS else value
+                if page in LOOKUP_PAGES:
+                    label = self.records[page][target]["name"]
+                elif page in DISPLAY_FIELDS:
+                    label = unquote(field(self.records[page][target], DISPLAY_FIELDS[page]))
+                else:
+                    label = value
                 result = {"type": page, "id": target, "text": label or value}
                 preview = self.previews.get((page, target))
                 if preview and page != "cursors":
@@ -352,6 +362,8 @@ class BrowserData:
                     entry["size"] = sum(len(self.uses.get((p, id), [])) for p in self.records)
                 index.append(entry)
                 payload = entry | {"rows": rows, "references": [{"type": p, "id": n, "text": self.records[p][n]["name"]} for p, n in refs], "source": f"// {id}\n[{name}]\n" + "\n".join(f"{k}={v}" for k, v in record["fields"])}
+                if page in LOOKUP_PAGES:
+                    del payload["source"]
                 if page == "dbtables":
                     payload["dbrows"] = [r for r in payload["references"] if r["type"] == "dbrows"]
                 if page == "params":
@@ -386,7 +398,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ref", default="master", help="Git ref or full commit SHA (default: master)")
     parser.add_argument("--dump-dir", type=Path, help="Use a local directory containing all required dump.* files")
-    parser.add_argument("--symbols-dir", type=Path, help="Optional symbols directory for local dumps (graphic/category/stat/varp .sym files)")
+    parser.add_argument("--symbols-dir", type=Path, help="Optional symbols directory for local dumps (graphic/category/stat/varp/model .sym files)")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--compress-json", action="store_true", help="Store data as .json.gz for size-limited static hosts such as GitHub Pages")
     parser.add_argument("--history-dir", type=Path, default=ROOT / "history", help="Imported CachePages history directory (default: history)")

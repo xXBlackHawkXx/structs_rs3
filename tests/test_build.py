@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from builder.build import BrowserData, FILES, main, parse_dump, split_values
+from builder.build import BrowserData, FILES, load_symbols, main, parse_dump, split_values
 from builder.field_types import native_field_type
 
 
@@ -56,11 +56,81 @@ class ImportTests(unittest.TestCase):
         self.assertIn(("enums", 3), data.refs["items", 42])
         self.assertIn(("enums", 3), data.refs["structs", 0])
 
+    def test_models_lookup_resolves_symbols_and_collects_typed_references(self):
+        records = {page:{} for page in FILES}
+        records['items'][1] = record(1,'sword',model='sword_model',manwear='sword_model',model2='0')
+        records['npcs'][2] = record(2,'guard',model1='sword_model',head1='base_model',multimodel='1,3,3,sword_model')
+        records['scenery'][3] = record(3,'statue',model='10,sword_model',modelhd='10,base_model',multiheadmodel='0,2,2,sword_model')
+        records['idkits'][4] = record(4,'kit',model='base_model',head1='sword_model')
+        records['spoteffects'][5] = record(5,'spark',model='sword_model')
+        records['params'][6] = record(6,'display_model',type='model',default='base_model')
+        records['structs'][7] = record(7,'appearance',param='display_model,sword_model')
+        records['enums'][8] = record(8,'models',inputtype='model',outputtype='model',val='base_model,sword_model')
+        records['dbtables'][9] = record(9,'appearances',column='col0,model,int')
+        records['dbrows'][10] = record(10,'appearance_row',table='appearances',data='col0,sword_model,2')
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(folder)
+            (root / 'model.sym').write_text('0\tbase_model\n42\tsword_model\n99\tunused_model\n',encoding='utf-8')
+            browser = BrowserData(records, load_symbols(root))
+            counts = browser.build(root / 'site')
+            self.assertEqual(counts['models'],3)
+            self.assertNotIn('models', records)
+            self.assertNotIn('models', FILES)
+            self.assertEqual(browser.resolve('0','model'),{'type':'models','id':0,'text':'base_model'})
+            self.assertEqual(browser.resolve('sword_model','model'),{'type':'models','id':42,'text':'sword_model'})
+            for value in ('null','-1','missing_model','777'):
+                self.assertEqual(browser.resolve(value,'model'),{'text':value})
+            expected = {(page, identifier) for page, identifier in [('items',1),('npcs',2),('scenery',3),('idkits',4),('spoteffects',5),('structs',7),('enums',8),('dbrows',10)]}
+            self.assertEqual(browser.refs['models',42],expected)
+            payload = json.loads((root / 'site/data/models/0.json').read_text())
+            self.assertEqual(payload['42']['rows'],[])
+            self.assertNotIn('source',payload['42'])
+            self.assertEqual(len(payload['42']['references']),len(expected))
+            self.assertEqual(payload['99']['references'],[])
+            scenery = json.loads((root / 'site/data/scenery/0.json').read_text())['3']
+            self.assertEqual(scenery['rows'][0]['parsed'],[{'text':'10'},{'type':'models','id':42,'text':'sword_model'}])
+            self.assertEqual(scenery['rows'][2]['parsed'],[{'text':'0'},{'text':'2'},{'text':'2'},{'type':'models','id':42,'text':'sword_model'}])
+
     def test_dbrow_tuple_types_preserve_quoted_commas(self):
         data = self.make_data()
         row = data.rows("dbrows", data.records["dbrows"][12])[1]
         self.assertEqual(row["parsed"][0]["id"], 42)
         self.assertEqual(row["parsed"][1]["text"], "Hello, world")
+
+    def test_category_and_stat_lookups_collect_native_and_typed_references(self):
+        records = {page:{} for page in FILES}
+        records['items'][1] = record(1,'sword',category='weapons')
+        records['npcs'][2] = record(2,'guard',category='weapons')
+        records['scenery'][3] = record(3,'stand',category='0')
+        records['mapelements'][4] = record(4,'map_marker',category='weapons')
+        records['achievements'][5] = record(5,'milestone',category='weapons',subcat='skills',statreq='0,10,Attack level,attack',statprereq='0,20,Attack level,0')
+        records['quests'][6] = record(6,'quest',statreq='attack,10')
+        records['quickchatphrases'][7] = record(7,'phrase',phrase='Attack: <stat_base(attack)>')
+        records['params'][8] = record(8,'required_stat',type='stat',default='attack')
+        records['structs'][9] = record(9,'requirement',param='required_stat,attack')
+        records['enums'][10] = record(10,'stat_categories',inputtype='stat',outputtype='category',val='attack,weapons')
+        records['dbtables'][11] = record(11,'requirements',column='col0,stat,category')
+        records['dbrows'][12] = record(12,'requirement_row',table='requirements',data='col0,attack,weapons')
+        browser = BrowserData(records,{'category':{'weapons':0,'skills':42,'unused_category':99},'stat':{'attack':0,'defence':1}})
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(folder)
+            counts = browser.build(root)
+            self.assertEqual(counts['categories'],3)
+            self.assertEqual(counts['stats'],2)
+            self.assertNotIn('categories',FILES)
+            self.assertNotIn('stats',FILES)
+            self.assertEqual(browser.refs['categories',0],{('items',1),('npcs',2),('scenery',3),('mapelements',4),('achievements',5),('enums',10),('dbrows',12)})
+            self.assertEqual(browser.refs['stats',0],{('achievements',5),('quests',6),('quickchatphrases',7),('params',8),('structs',9),('enums',10),('dbrows',12)})
+            for page, kind, name in [('categories','category','weapons'),('stats','stat','attack')]:
+                payload = json.loads((root/f'data/{page}/0.json').read_text())['0']
+                self.assertEqual(payload['name'],name)
+                self.assertEqual(payload['rows'],[])
+                self.assertNotIn('source',payload)
+                self.assertEqual(browser.resolve('0',kind),{'type':page,'id':0,'text':name})
+                for value in ('null','-1','missing','999'):
+                    self.assertEqual(browser.resolve(value,kind),{'text':value})
+            quest = json.loads((root/'data/quests/0.json').read_text())['6']
+            self.assertEqual(quest['rows'][0]['parsed'],[{'type':'stats','id':0,'text':'attack'},{'text':'10'}])
 
     def test_item_stack_variants_resolve_items_quantities_and_reverse_refs(self):
         data = self.make_data()
@@ -78,12 +148,16 @@ class ImportTests(unittest.TestCase):
             dumps = root / 'dumps'; dumps.mkdir()
             for kind in FILES.values():
                 (dumps / f'dump.{kind}').write_text(f'// 0\n[{kind}_0]\n',encoding='utf-8')
-            (dumps / 'dump.obj').write_text('// 0\n[obj_0]\nname=Unicode: épée\ncount1=obj_0,2\n',encoding='utf-8')
+            (dumps / 'dump.obj').write_text('// 0\n[obj_0]\nname=Unicode: épée\ncount1=obj_0,2\nmodel=local_model\n',encoding='utf-8')
+            symbols = dumps / 'symbols'; symbols.mkdir()
+            (symbols / 'model.sym').write_text('42\tlocal_model\n',encoding='utf-8')
             output = root / 'site'
             with patch('sys.argv',['builder.build','--dump-dir',str(dumps),'--output',str(output),'--compress-json','--no-history']):
                 main()
             manifest = json.loads((output / 'data/manifest.json').read_text())
             self.assertEqual(manifest['compression'],'gzip')
+            self.assertEqual(manifest['counts']['models'],1)
+            self.assertIn('symbols/model.sym',manifest['sha256'])
             self.assertFalse((output / 'data/manifest.json.gz').exists())
             self.assertTrue((output / 'key_labels.json').exists())
             self.assertTrue((output / 'index.html').exists())
@@ -92,6 +166,9 @@ class ImportTests(unittest.TestCase):
                 item = json.load(stream)['0']
             self.assertEqual(item['display'],'Unicode: épée')
             self.assertEqual(item['rows'][1]['parsed'][1]['text'],'2')
+            self.assertEqual(item['rows'][2]['parsed'],[{'type':'models','id':42,'text':'local_model'}])
+            with gzip.open(output / 'data/models/0.json.gz','rt',encoding='utf-8') as stream:
+                self.assertEqual(json.load(stream)['42']['references'],[{'type':'items','id':0,'text':'obj_0'}])
             with gzip.open(output / 'data/items/index.json.gz','rt',encoding='utf-8') as stream:
                 self.assertEqual(json.load(stream)[0]['id'],0)
 
@@ -165,11 +242,11 @@ class ImportTests(unittest.TestCase):
         value = row['parsed'][0]
         self.assertEqual(value['kind'],'inline')
         links = [part for part in value['values'] if part.get('type')]
-        self.assertEqual([(part['type'],part['id']) for part in links],[('enums',3),('varplayerbits',4)])
+        self.assertEqual([(part['type'],part['id']) for part in links],[('enums',3),('varplayerbits',4),('stats',16)])
         self.assertIn(('quickchatphrases',0),data.refs['enums',3])
         self.assertIn(('quickchatphrases',0),data.refs['varplayerbits',4])
         rendered = ''.join(part.get('text','') for part in value['values'])
-        self.assertIn('<enum_string_varbit(options,progress)><stat_base(16: agility)>',rendered)
+        self.assertIn('<enum_string_varbit(options,progress)><stat_base(agility)>',rendered)
         self.assertIn('<img src=x onerror=alert(1)>',rendered)
         self.assertTrue(rendered.endswith('<unknown(progress)> <listdialog(options,extra)> <objdialog()>'))
 
@@ -297,7 +374,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(rows[2]['parsed'][0]['kind'], 'image')
         self.assertTrue(rows[2]['parsed'][0]['src'].endswith('/30108-0.png'))
         self.assertTrue(data.resolve('"quest_icons_large,1"', 'graphic')['src'].endswith('/2379-0.png'))
-        self.assertEqual(rows[3]['parsed'], [{'text':'4815: skills'}])
+        self.assertEqual(rows[3]['parsed'], [{'type':'categories','id':4815,'text':'skills'}])
 
     def test_field_pages_are_distinct_from_shared_params(self):
         data = self.make_data()

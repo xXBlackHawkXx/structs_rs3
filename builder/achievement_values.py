@@ -26,7 +26,7 @@ def achievement_value(browser, key, value, source):
             return None
         group, required, remainder = parts
         target_type = list_types[key]
-        target_page = {"varbit":"varplayerbits", "varplayer":"varplayers"}.get(target_type)
+        target_page = {"varbit":"varplayerbits", "varplayer":"varplayers", "stat":"stats"}.get(target_type)
         names = browser.names.get(target_page, {}) or browser.symbols.get(target_type, {})
         targets = []
         # Labels can contain unquoted commas. Known reference names form a suffix.

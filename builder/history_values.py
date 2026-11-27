@@ -36,7 +36,7 @@ class HistoricalBrowser(BrowserData):
             self.bindings.append((name, ref))
             target = TYPE_PAGES.get(ref['type'])
             if target:
-                self.names[target][name] = ref['id']
+                self.names.setdefault(target, {})[name] = ref['id']
             else:
                 self.symbols.setdefault(ref['type'], {})[name] = ref['id']
 

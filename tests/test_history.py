@@ -176,7 +176,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(value['headers'],['group','value','name','stats'])
         row = value['rows'][0]
         self.assertEqual(row[2],{'text':'Skill: 115 Slayer, with comma'})
-        self.assertEqual(row[3]['values'],[{'text':'slayer'}])
+        self.assertEqual(row[3]['values'],[{'type':'stats','id':18,'text':'slayer'}])
         refs = [{'value_index':0,'path':[1,0],'type':'obj','id':42}]
         value = parsed_values('dbrows','data',['col0,old_sword,10'],refs,snapshot)[0]
         self.assertEqual(value['values'][0],{'type':'items','id':42,'text':'old_sword'})

@@ -47,6 +47,9 @@ h2 { font-size: 1.2rem; }
 .config-preview { display: block; width: 32px; height: 32px; object-fit: contain; }
 .config-reference { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 .config-reference > img { width: 32px; height: 32px; object-fit: contain; flex: 0 0 32px; }
+.stock-parsed-item, .cursor-reference, .config-reference { position: relative; min-height: 32px; }
+.preview-fallback { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; pointer-events: none; }
+.preview-fallback .struct-icon { margin: 0; }
 .muted, footer { color: #a2b0c9; font-size: .875rem; }
 footer { margin-top: 28px; border-top: 1px solid #313e59; padding-top: 12px; line-height: 1.7; }
 .toolbar, .pagination { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 16px 0; }

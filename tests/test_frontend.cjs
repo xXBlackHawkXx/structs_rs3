@@ -538,9 +538,74 @@ async function run() {
     assert.equal(summary.querySelector('dd').textContent,'Name');
   } finally { dom.window.close(); }
 
-  const item = {id: 3, name: 'example', rows: [{key: 'name', raw: 'Example', parsed: [{text: 'Example'}]}], references: []};
+  const models = [
+    {id:0,name:'base_model',size:0,refs:0},
+    {id:42,name:'sword_model',size:0,refs:2},
+    {id:99,name:'unused_model',size:0,refs:0},
+  ];
+  dom = await open('?type=models',new Map([['data/models/index.json',models]]));
+  try {
+    const doc = dom.window.document;
+    assert.equal(doc.querySelector('h1').textContent,'Models');
+    const view = doc.querySelector('main table');
+    assert.deepEqual([...view.tHead.rows[0].cells].map(cell=>cell.textContent),['id','name','refs']);
+    assert.equal(view.tBodies[0].rows.length,3);
+    assert.equal(doc.querySelector('option[value="empty"]'),null);
+    const search = doc.querySelector('input[type="search"]');
+    search.value = 'sword'; search.dispatchEvent(new dom.window.Event('input'));
+    assert.equal(view.tBodies[0].rows.length,1);
+    assert.equal(view.tBodies[0].rows[0].querySelector('a').getAttribute('href'),'index.html?type=models&id=42');
+    search.value = ''; search.dispatchEvent(new dom.window.Event('input'));
+    const filter = doc.querySelector('[aria-label="Filter records"]');
+    filter.value = 'referenced'; filter.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(view.tBodies[0].rows.length,1);
+    assert.ok(view.tBodies[0].rows[0].textContent.includes('sword_model'));
+  } finally { dom.window.close(); }
+  dom = await open('?type=models&id=42',new Map([['data/models/0.json',{'42':{
+    ...models[1],rows:[],references:[{type:'items',id:1,text:'sword'},{type:'npcs',id:2,text:'guard'}],
+  }}]]));
+  try {
+    const doc = dom.window.document;
+    assert.equal(doc.querySelector('h1').textContent,'MODELS #42: sword_model');
+    assert.deepEqual([...doc.querySelectorAll('main h2')].map(node=>node.textContent),['References (2)']);
+    assert.equal(doc.querySelector('main table'),null);
+    assert.ok(!doc.querySelector('main').textContent.includes('no explicit fields'));
+    assert.deepEqual([...doc.querySelectorAll('.reference-list a')].map(a=>a.getAttribute('href')),['index.html?type=items&id=1','index.html?type=npcs&id=2']);
+  } finally { dom.window.close(); }
+
+  for (const [type,label,name] of [['categories','Categories','weapons'],['stats','Stats','attack']]) {
+    const entry = {id:0,name,size:0,refs:1};
+    dom = await open(`?type=${type}&q=${name}`,new Map([[`data/${type}/index.json`,[entry,{id:1,name:'unused',size:0,refs:0}]]]));
+    try {
+      const doc = dom.window.document;
+      assert.equal(doc.querySelector('h1').textContent,label);
+      const view = doc.querySelector('main table');
+      assert.deepEqual([...view.tHead.rows[0].cells].map(cell=>cell.textContent),['id','name','refs']);
+      assert.equal(view.tBodies[0].rows.length,1);
+      assert.equal(view.tBodies[0].rows[0].querySelector('a').getAttribute('href'),`index.html?type=${type}&id=0`);
+      assert.equal(doc.querySelector('option[value="empty"]'),null);
+    } finally { dom.window.close(); }
+    dom = await open(`?type=${type}&id=0`,new Map([[`data/${type}/0.json`,{'0':{
+      ...entry,rows:[],references:[{type:'items',id:1,text:'sword'}],
+    }}]]));
+    try {
+      const doc = dom.window.document;
+      assert.equal(doc.querySelector('h1').textContent,`${type.toUpperCase()} #0: ${name}`);
+      assert.deepEqual([...doc.querySelectorAll('main h2')].map(node=>node.textContent),['References (1)']);
+      assert.equal(doc.querySelector('main table'),null);
+      assert.ok(!doc.querySelector('main').textContent.includes('no explicit fields'));
+      assert.equal(doc.querySelector('.reference-list a').getAttribute('href'),'index.html?type=items&id=1');
+    } finally { dom.window.close(); }
+  }
+
+  const item = {id: 3, name: 'example', rows: [
+    {key:'name',raw:'Example',parsed:[{text:'Example'}]},
+    {key:'model',raw:'sword_model',type:'model',parsed:[{type:'models',id:42,text:'sword_model'}]},
+  ], references: []};
   dom = await open('?type=items&id=3', {'3': item});
   try {
+    const modelLink = [...dom.window.document.querySelectorAll('a')].find(a=>a.getAttribute('href') === 'index.html?type=models&id=42');
+    assert.equal(modelLink?.textContent,'42: sword_model');
     assert.match(section(dom.window.document, 'cs2 params').map(n => n.textContent).join(''), /does not have cs2 params/);
   } finally { dom.window.close(); }
 

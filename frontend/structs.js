@@ -1,13 +1,15 @@
 "use strict";
 (() => {
-  const types = ['params', 'achievement_params', 'achievements', 'cursor_params', 'cursors', 'dbtables', 'dbrows', 'idkit_params', 'idkits', 'inv_params', 'invs', 'item_params', 'items', 'npc_params', 'npcs', 'scenery_params', 'scenery', 'structs', 'enums', 'quest_params', 'quests', 'quickchatcategories', 'quickchatphrases', 'varplayerbit_params', 'varplayerbits', 'varplayers', 'mapelements', 'mapsceneicons', 'animationsets', 'sequences', 'spoteffects', 'hitsplats', 'healthbars'];
+  const types = ['params', 'achievement_params', 'achievements', 'cursor_params', 'cursors', 'dbtables', 'dbrows', 'idkit_params', 'idkits', 'inv_params', 'invs', 'item_params', 'items', 'npc_params', 'npcs', 'scenery_params', 'scenery', 'structs', 'enums', 'quest_params', 'quests', 'quickchatcategories', 'quickchatphrases', 'varplayerbit_params', 'varplayerbits', 'varplayers', 'mapelements', 'mapsceneicons', 'animationsets', 'sequences', 'spoteffects', 'hitsplats', 'healthbars', 'models', 'categories', 'stats'];
+  const lookupTypes = {models:'model',categories:'category',stats:'stat'};
   const extraConfigTypes = {varplayers:'varp',mapelements:'mel',mapsceneicons:'msi',animationsets:'bas',sequences:'seq',spoteffects:'spot',hitsplats:'hitmark',healthbars:'headbar'};
   const previewPages = ['cursors','mapelements','mapsceneicons','hitsplats','healthbars'];
   const fieldPages = {achievements:'achievement_params',idkits:'idkit_params',invs:'inv_params',items:'item_params',npcs:'npc_params',quests:'quest_params',varplayerbits:'varplayerbit_params',scenery:'scenery_params',cursors:'cursor_params'};
   const configTypes = {params:'param',achievements:'achievement',dbtables:'dbtable',dbrows:'dbrow',idkits:'idkit',invs:'inv',items:'item',npcs:'npc',structs:'struct',enums:'enum',quests:'quest',varplayerbits:'varbit',scenery:'object',cursors:'cursor',quickchatcategories:'quickchatcat',quickchatphrases:'quickchatphrase'};
   const typeLabels = {params:'CS2 parameters',achievement_params:'Achievement fields',achievements:'Achievements',dbtables:'Database tables',dbrows:'Database rows',idkit_params:'Identity kit fields',idkits:'Identity kits',inv_params:'Inventory fields',invs:'Inventories',item_params:'Item fields',items:'Items',npc_params:'NPC fields',npcs:'NPCs',structs:'Structs',enums:'Enums',quest_params:'Quest fields',quests:'Quests',varplayerbit_params:'Varbit fields',varplayerbits:'Varbits',scenery:'Scenery',scenery_params:'Scenery fields',cursors:'Cursors',cursor_params:'Cursor fields',quickchatcategories:'Quick Chat categories',quickchatphrases:'Quick Chat phrases'};
-  Object.assign(configTypes, extraConfigTypes);
+  Object.assign(configTypes, extraConfigTypes, lookupTypes);
   Object.assign(typeLabels, {varplayers:'Player variables',mapelements:'Map elements',mapsceneicons:'Map scene icons',animationsets:'Animation sets',sequences:'Animation sequences',spoteffects:'Spot effects',hitsplats:'Hitsplats',healthbars:'Health bars'});
+  Object.assign(typeLabels, {models:'Models',categories:'Categories',stats:'Stats'});
   const isCs2Param = row => row.kind === 'param' || row.param !== undefined;
   const main = document.getElementById('main');
   const query = new URLSearchParams(location.search);
@@ -19,6 +21,31 @@
   let keyLabels;
   let cursorPreviews;
   let parameterNames;
+  function loadItemImage(image, identifier, onFailure, eager = false) {
+    const source = `https://chisel.weirdgloop.org/gazproj/icons/png/${identifier}.png`;
+    let retries = 0, retryTimer, complete = false;
+    // Keep the sprite's space while loading, including between retries.
+    image.loading = eager ? 'eager' : 'lazy';
+    image.decoding = 'async';
+    image.style.visibility = 'hidden';
+    image.onload = () => {
+      complete = true;
+      clearTimeout(retryTimer);
+      image.hidden = false; image.style.visibility = '';
+    };
+    image.onerror = () => {
+      if (complete || retryTimer) return;
+      if (retries === 2) { complete = true; onFailure(); return; }
+      retries++;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!image.isConnected) return;
+        image.loading = 'eager';
+        image.src = `${source}?retry=${retries}`;
+      },retries === 1 ? 500 : 1500);
+    };
+    image.src = source;
+  }
   function readableWords(value) {
     const words = String(value).replace(/([a-z])([A-Z])/g, '$1 $2').split(/[_\s]+/).filter(Boolean).map(word => {
       if (keyLabels.words[word.toLowerCase()]) return keyLabels.words[word.toLowerCase()];
@@ -68,7 +95,7 @@
       params:'param', dbtables:'dbtable', items:'item', scenery:'scenery', cursors:'cursor',
       quickchatcategories:'quickchatcategory', quickchatphrases:'quickchatphrase', varplayers:'varplayer',
       mapelements:'mapelement', mapsceneicons:'mapsceneicon', animationsets:'animationset',
-      sequences:'sequence', spoteffects:'spoteffect', hitsplats:'hitsplat', healthbars:'healthbar',
+      sequences:'sequence', spoteffects:'spoteffect', hitsplats:'hitsplat', healthbars:'healthbar', models:'model', categories:'category', stats:'stat',
     }[type];
     if (!iconType) return null;
     const icon = el('img', null, {class:'struct-icon', src:`images/${iconType}-icon.png`, alt:'', width:'11', height:'11', loading:'lazy'});
@@ -123,8 +150,8 @@
     const showLinks = ['items','npcs','achievements','scenery','quests','structs'].includes(page);
     const shortcuts = el('div', null, {class: showLinks ? 'config-shortcuts' : 'config-graphic', role: 'group', 'aria-label': `${typeLabel} ${showLinks ? 'links' : 'preview'}`});
     if (page === 'items') {
-      const icon = el('img', null, {src: `https://chisel.weirdgloop.org/gazproj/icons/png/${id}.png`, alt: `${name} icon`});
-      icon.onerror = () => { icon.hidden = true; };
+      const icon = el('img', null, {alt: `${name} icon`,width:'32',height:'32'});
+      loadItemImage(icon,id,() => { icon.style.visibility = 'hidden'; },true);
       shortcuts.append(icon);
     } else {
       const sprite = data.preview?.kind === 'image' ? data.preview : data.rows.find(row => ['sprite','icon','graphic'].includes(row.key))?.parsed.find(value => value.kind === 'image');
@@ -205,14 +232,23 @@
       const target = link(value.type, value.id, `${value.id}: ${value.text}`, !preview);
       if (preview) {
         const span = el('span',null,{class:value.type === 'items' ? 'stock-parsed-item' : value.type === 'cursors' ? 'cursor-reference' : 'config-reference'});
-        const image = el('img',null,{src:preview,alt:'',width:'32',height:'32',loading:'lazy'});
-        image.onerror = () => {
-          image.hidden = true;
-          if (!target.querySelector('.struct-icon')) {
+        const image = el('img',null,{alt:'',width:'32',height:'32',loading:'lazy'});
+        const failed = () => {
+          image.style.visibility = 'hidden';
+          if (!span.querySelector('.preview-fallback')) {
             const fallback = markerIcon(value.type);
-            if (fallback) target.prepend(fallback);
+            if (fallback) {
+              const placeholder = el('span',null,{class:'preview-fallback','aria-hidden':'true'});
+              placeholder.append(fallback); span.append(placeholder);
+            }
           }
         };
+        image.addEventListener('load',() => {
+          image.style.visibility = '';
+          span.querySelector('.preview-fallback')?.remove();
+        });
+        if (value.type === 'items') loadItemImage(image,value.id,failed);
+        else { image.onerror = failed; image.src = preview; }
         span.append(image,target);
         return span;
       }
@@ -349,21 +385,26 @@
   }
   async function listing() {
     heading(typeLabels[page]);
+    const lookup = Object.hasOwn(lookupTypes, page);
     const rows = await json(`data/${page}/index.json`);
     const toolbar = el('form', null, {class: 'toolbar', role: 'search'});
     const search = el('input', null, {type: 'search', placeholder: 'Search ID, name or value', 'aria-label': 'Search configs', value: query.get('q') || ''});
     const filter = el('select', null, {'aria-label': 'Filter records'});
-    for (const [value, text] of [['all', 'All records'], ['named', 'Named records'], ['empty', 'Empty records'], ['referenced', 'Referenced records']]) filter.append(el('option', text, {value}));
+    for (const [value, text] of [['all', 'All records'], ['named', 'Named records'], ['empty', 'Empty records'], ['referenced', 'Referenced records']]) {
+      if (!lookup || value !== 'empty') filter.append(el('option', text, {value}));
+    }
     filter.value = query.get('filter') || 'all';
+    if (!filter.value) filter.value = 'all';
     const jump = el('input', null, {type: page.endsWith('_params') ? 'text' : 'number', min: '0', placeholder: page.endsWith('_params') ? 'Field name' : 'ID', 'aria-label': 'Go to ID', style: 'width:140px'});
     const go = el('button', 'Go to ID', {type: 'submit'});
     toolbar.append(search, filter, jump, go);
     toolbar.addEventListener('submit', e => { e.preventDefault(); if (jump.value !== '') location.href = url(page, jump.value); });
     main.append(toolbar);
     const legend = el('p', null, {class: 'legend muted'});
-    legend.append(el('span', 'Named', {class: 'named'}), el('span', 'Empty', {class: 'empty'}));
+    legend.append(el('span', 'Named', {class: 'named'}));
+    if (!lookup) legend.append(el('span', 'Empty', {class: 'empty'}));
     main.append(legend);
-    const headers = ['id', 'name', 'size', 'refs'];
+    const headers = lookup ? ['id', 'name', 'refs'] : ['id', 'name', 'size', 'refs'];
     const quickchat = ['quickchatcategories','quickchatphrases'].includes(page);
     if (quickchat) headers.splice(2, 0, 'display');
     if (previewPages.includes(page)) headers.splice(1,0,'preview');
@@ -381,7 +422,7 @@
     main.append(pagination, view.wrapper);
     let offset = Math.max(0, Number(query.get('page') || 1) - 1) * 100;
     let sort = 'id', direction = 1;
-    const isNamed = r => !/^(param|struct|enum|obj|npc|loc|cursor|inv|quest|idk|idkit|dbrow|dbtable|varbit|achievement|chatcat|chatphrase|varplayer|mel|msi|bas|seq|spotanim|hitmark|headbar)_\d+$/.test(r.name);
+    const isNamed = r => !/^(param|struct|enum|obj|npc|loc|cursor|inv|quest|idk|idkit|dbrow|dbtable|varbit|achievement|chatcat|chatphrase|varplayer|mel|msi|bas|seq|spotanim|hitmark|headbar|model|category|stat)_\d+$/.test(r.name);
     function render() {
       const needle = search.value.trim().toLowerCase();
       const filtered = rows.filter(r => (!needle || [r.id, r.name, r.display, r.type, r.example].some(v => String(v ?? '').toLowerCase().includes(needle))) && (filter.value === 'all' || filter.value === 'named' && isNamed(r) || filter.value === 'empty' && r.size === 0 || filter.value === 'referenced' && r.refs > 0));
@@ -390,7 +431,7 @@
       offset = Math.min(offset, Math.max(0, Math.ceil(filtered.length / limit) - 1) * limit);
       const fragment = document.createDocumentFragment();
       for (const record of filtered.slice(offset, offset + limit)) {
-        const row = el('tr', null, {class: isNamed(record) ? 'struct-named' : record.size === 0 ? 'struct-empty' : ''});
+        const row = el('tr', null, {class: isNamed(record) ? 'struct-named' : !lookup && record.size === 0 ? 'struct-empty' : ''});
         for (const key of headers) {
           const cell = el('td', null, {class: ['id','size','refs'].includes(key) ? 'numeric' : ''});
           if (key === 'id') cell.append(link(page, record.id));
@@ -434,7 +475,7 @@
   }
   async function configHistory() {
     const info = manifest.history;
-    if (!info || page.endsWith('_params')) return null;
+    if (!info || page.endsWith('_params') || Object.hasOwn(lookupTypes, page)) return null;
     const chunk = Math.floor(Number(id) / info.chunkSize);
     if (!info.chunks[page]?.includes(chunk)) return null;
     return (await json(`data/history/${page}/${chunk}.json`))[Number(id)] || null;
@@ -801,7 +842,7 @@
       if (entries.length) appendRows(entries, 'entries');
       else main.append(el('p', 'This enum has no explicit entries.', {class:'muted'}));
     } else if (data.rows.length) appendRows(data.rows, nativeField ? 'uses' : 'fields');
-    else main.append(el('p', 'This config has no explicit fields.'));
+    else if (!Object.hasOwn(lookupTypes, page)) main.append(el('p', 'This config has no explicit fields.'));
     if (data.uses?.length) { main.append(el('h2', `Parameter uses (${number(data.uses.length)})`)); appendRows(data.uses, 'uses'); }
     if (page === 'dbtables') await databaseRows(data);
     appendHistory(past);
